@@ -1,0 +1,6 @@
+{
+  "name": "Tambola Live Caller",
+  "description": "Real-time multiplayer Tambola (Housie) number caller with live Firestore sync, automated voice announcements, host controls, and mobile share sheet.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

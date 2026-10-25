@@ -1,0 +1,26 @@
+{
+  "id": "/",
+  "name": "Tambola Live Caller",
+  "short_name": "Tambola",
+  "description": "Real-time multiplayer Tambola (Housie) number caller with live sync, automated voice announcements, and senior-friendly board.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0B0F19",
+  "theme_color": "#0B0F19",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}

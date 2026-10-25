@@ -1,0 +1,42 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Tambola Game Rooms
+    match /rooms/{roomId} {
+      // 1. Any player or host can read room state live
+      allow read: if true;
+
+      // 2. Room creation
+      // Requires authenticated user (Firebase Anonymous Auth), matching hostUid, 6-char code, <= 10 players
+      allow create: if request.auth != null
+                    && request.resource.data.hostUid == request.auth.uid
+                    && request.resource.data.code is string
+                    && request.resource.data.code.size() == 6
+                    && request.resource.data.players is list
+                    && request.resource.data.players.size() <= 10;
+
+      // 3. Room updates: strict authorization gate
+      allow update: if request.auth != null && (
+        // Case A: Host mutations (calling numbers, undo, reset, auto interval, heartbeat)
+        // Cryptographically authenticated: request.auth.uid must match the room's hostUid
+        (resource.data.hostUid == request.auth.uid)
+        ||
+        // Case B: Player joining the room
+        // Can ONLY mutate the 'players' array and cannot exceed 10 players
+        // Non-hosts are strictly prevented from modifying calledNumbers, currentNumber, or autoInterval
+        (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['players'])
+         && request.resource.data.players is list
+         && request.resource.data.players.size() <= 10)
+      );
+
+      // 4. Host deletion: only the creator host can delete the room
+      allow delete: if request.auth != null && resource.data.hostUid == request.auth.uid;
+    }
+  }
+}

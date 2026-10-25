@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#151C2C" />
+      <stop offset="100%" stop-color="#0B0F19" />
+    </linearGradient>
+    <linearGradient id="ring" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#F59E0B" />
+      <stop offset="100%" stop-color="#D97706" />
+    </linearGradient>
+    <linearGradient id="btn" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#6366F1" />
+      <stop offset="100%" stop-color="#4F46E5" />
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)" />
+  <circle cx="256" cy="256" r="180" fill="none" stroke="url(#ring)" stroke-width="20" stroke-dasharray="24 16" />
+  <circle cx="256" cy="256" r="140" fill="url(#btn)" />
+  <text x="256" y="295" font-family="'Plus Jakarta Sans', system-ui, sans-serif" font-size="120" font-weight="900" fill="#FFFFFF" text-anchor="middle">90</text>
+  <circle cx="370" cy="140" r="28" fill="#F59E0B" />
+  <text x="370" y="149" font-family="'Plus Jakarta Sans', system-ui, sans-serif" font-size="26" font-weight="900" fill="#0B0F19" text-anchor="middle">★</text>
+</svg>

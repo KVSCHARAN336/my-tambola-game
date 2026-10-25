@@ -1,0 +1,6 @@
+{
+  "summary":  "Revised implementation plan incorporating iOS Safari WebKit speech synthesis unlocking, viewport safe-area handling, and dedicated voice toggle controls for both host and player screens.",
+  "updatedAt":  "2026-10-25T13:35:52.069698711Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}
