@@ -3,9 +3,13 @@ import {
   IconArrowLeft,
   IconSpeaker,
   IconSpeakerMuted,
-  IconUser
+  IconUser,
+  IconShare,
+  IconCopy,
+  IconCheck
 } from './Icons';
 import { Board } from './Board';
+import { ShareSheet, getRoomShareUrl } from './ShareSheet';
 import { TambolaRoom } from '../types';
 import { announceNumber, formatAnnouncement, unlockSpeechOnIOS } from '../speech';
 
@@ -15,6 +19,7 @@ interface PlayerScreenProps {
   voiceEnabled: boolean;
   onToggleVoice: () => void;
   onBackToHome: () => void;
+  onShowToast?: (msg: string, type?: 'info' | 'success' | 'error') => void;
 }
 
 export const PlayerScreen: React.FC<PlayerScreenProps> = ({
@@ -22,9 +27,12 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
   playerName,
   voiceEnabled,
   onToggleVoice,
-  onBackToHome
+  onBackToHome,
+  onShowToast
 }) => {
   const [isHostDisconnected, setIsHostDisconnected] = useState(false);
+  const [isShareOpen, setIsShareOpen] = useState(false);
+  const [linkCopied, setLinkCopied] = useState(false);
   const previousNumberRef = useRef<number | null>(room.currentNumber);
 
   // Monitor host heartbeat: if older than 60s, flag as disconnected
@@ -51,7 +59,19 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
   const handleRepeatCall = () => {
     if (room.currentNumber === null) return;
     unlockSpeechOnIOS();
-    announceNumber(room.currentNumber, true);
+    announceNumber(room.currentNumber, true, true);
+  };
+
+  const handleCopyLink = async () => {
+    const url = getRoomShareUrl(room.code);
+    try {
+      await navigator.clipboard.writeText(url);
+      setLinkCopied(true);
+      if (onShowToast) onShowToast('Room link copied to clipboard', 'success');
+      setTimeout(() => setLinkCopied(false), 2000);
+    } catch {
+      if (onShowToast) onShowToast('Failed to copy room link', 'error');
+    }
   };
 
   const recentCalls = room.calledNumbers.slice(-5).reverse();
@@ -60,7 +80,7 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
     <div className="flex flex-col min-h-dvh max-w-xl md:max-w-3xl lg:max-w-4xl mx-auto bg-[#0B0F19] text-slate-100">
       {/* Top Bar */}
       <header className="sticky top-0 z-30 bg-[#0B0F19]/95 backdrop-blur-md border-b border-slate-800 px-4 sm:px-6 py-3 pt-safe">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-2">
           <button
             onClick={onBackToHome}
             className="w-10 h-10 rounded-xl flex items-center justify-center text-slate-400 hover:text-white hover:bg-slate-800 transition-colors shrink-0"
@@ -69,30 +89,46 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
             <IconArrowLeft className="w-5 h-5" />
           </button>
 
-          <div className="text-center px-2">
+          <div className="text-center px-1 truncate">
             <div className="flex items-center justify-center gap-2">
-              <span className="text-base font-extrabold text-white">Player View</span>
-              <span className="text-xs px-2.5 py-0.5 rounded-lg bg-indigo-950 border border-indigo-700/80 text-indigo-300 font-num font-black">
-                {room.code}
-              </span>
+              <span className="text-sm sm:text-base font-extrabold text-white">Player View</span>
+              <button
+                onClick={handleCopyLink}
+                className="text-xs px-2.5 py-0.5 rounded-lg bg-indigo-950 border border-indigo-700/80 text-indigo-300 font-num font-black inline-flex items-center gap-1 hover:bg-indigo-900 transition-colors"
+                title="Click to copy room link"
+              >
+                <span>{room.code}</span>
+                {linkCopied ? <IconCheck className="w-3 h-3 text-amber-400" /> : <IconCopy className="w-3 h-3 text-indigo-400" />}
+              </button>
             </div>
-            <p className="text-[11px] font-semibold text-slate-400">
+            <p className="text-[11px] font-semibold text-slate-400 truncate">
               Joined as <span className="text-amber-400 font-bold">{playerName}</span>
             </p>
           </div>
 
-          <button
-            onClick={onToggleVoice}
-            className={`w-10 h-10 rounded-xl flex items-center justify-center transition-colors shrink-0 ${
-              voiceEnabled
-                ? 'bg-indigo-600/30 text-indigo-300 border border-indigo-500/50'
-                : 'bg-slate-800 text-slate-500 border border-slate-700'
-            }`}
-            title={voiceEnabled ? 'Voice is ON' : 'Voice is OFF'}
-            aria-label={voiceEnabled ? 'Turn voice off' : 'Turn voice on'}
-          >
-            {voiceEnabled ? <IconSpeaker className="w-5 h-5" /> : <IconSpeakerMuted className="w-5 h-5" />}
-          </button>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              onClick={() => setIsShareOpen(true)}
+              className="w-10 h-10 rounded-xl flex items-center justify-center bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-colors"
+              title="Share Room & View Roster"
+              aria-label="Share room"
+            >
+              <IconShare className="w-4 h-4 text-indigo-400" />
+            </button>
+
+            <button
+              onClick={onToggleVoice}
+              className={`w-10 h-10 rounded-xl flex items-center justify-center transition-colors ${
+                voiceEnabled
+                  ? 'bg-indigo-600/30 text-indigo-300 border border-indigo-500/50'
+                  : 'bg-slate-800 text-slate-500 border border-slate-700'
+              }`}
+              title={voiceEnabled ? 'Voice is ON' : 'Voice is OFF'}
+              aria-label={voiceEnabled ? 'Turn voice off' : 'Turn voice on'}
+            >
+              {voiceEnabled ? <IconSpeaker className="w-5 h-5" /> : <IconSpeakerMuted className="w-5 h-5" />}
+            </button>
+          </div>
         </div>
       </header>
 
@@ -100,13 +136,13 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
       {isHostDisconnected && (
         <div className="bg-amber-950/90 border-b border-amber-800 px-4 py-2.5 text-xs text-amber-200 flex items-center justify-center gap-2">
           <span className="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse" />
-          <span className="font-bold">Host disconnected. Waiting for host to reconnect...</span>
+          <span className="font-bold">Host caller disconnected. Waiting for host to reconnect...</span>
         </div>
       )}
 
       {/* Main Content */}
       <main className="flex-1 px-4 sm:px-6 py-4 space-y-4">
-        {/* Large Current Number Display (No text collision) */}
+        {/* Large Current Number Display */}
         <div className="flex flex-col items-center justify-center py-2 sm:py-3">
           <div className="text-center mb-2">
             <span className="text-xs sm:text-sm font-black tracking-widest text-indigo-400 uppercase">
@@ -135,7 +171,7 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
             </div>
           ) : (
             <p className="text-xs text-slate-400 font-medium mt-2.5 italic">
-              Waiting for host to call the first number...
+              Waiting for caller to draw the first number...
             </p>
           )}
         </div>
@@ -159,21 +195,37 @@ export const PlayerScreen: React.FC<PlayerScreenProps> = ({
           )}
         </div>
 
-        {/* Player Roster Indicator */}
-        <div className="flex items-center justify-between px-1 text-xs text-slate-400">
-          <div className="flex items-center gap-2">
+        {/* Connection and Player Roster Status */}
+        <div className="flex items-center justify-between px-1 text-xs">
+          <button
+            onClick={() => setIsShareOpen(true)}
+            className="flex items-center gap-2 text-slate-400 hover:text-slate-200 transition-colors"
+            title="View joined players"
+          >
             <IconUser className="w-4 h-4 text-indigo-400" />
             <span className="font-semibold text-slate-300">Active Players:</span>
             <span className="font-black text-white font-num">{room.players.length} / 10</span>
+          </button>
+
+          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-950/70 border border-emerald-800/70 text-emerald-300 font-bold text-[11px]">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+            <span>Live Synchronized</span>
           </div>
-          <span className="text-xs font-bold text-amber-400 bg-amber-950/60 px-2.5 py-0.5 rounded-full border border-amber-800/60">
-            Live Synchronized
-          </span>
         </div>
 
         {/* Master Board 1-90 */}
         <Board calledNumbers={room.calledNumbers} currentNumber={room.currentNumber} />
       </main>
+
+      {/* Share / Roster Sheet for Players (isHost={false} means no player kicking) */}
+      <ShareSheet
+        isOpen={isShareOpen}
+        onClose={() => setIsShareOpen(false)}
+        roomCode={room.code}
+        players={room.players}
+        isHost={false}
+        onShowToast={onShowToast || (() => {})}
+      />
 
       <div className="pb-safe" />
     </div>

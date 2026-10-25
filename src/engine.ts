@@ -150,6 +150,53 @@ export function saveLocalRoom(room: TambolaRoom): void {
 }
 
 /**
+ * Verifies whether a room exists in Firestore (or local storage in demo mode)
+ * and whether it has expired (past 24h limit).
+ */
+export async function verifyRoomExists(code: string): Promise<{
+  valid: boolean;
+  expired?: boolean;
+  error?: string;
+  room?: Partial<TambolaRoom>;
+}> {
+  const cleanCode = code.trim().toUpperCase();
+  if (!cleanCode || cleanCode.length < 4) {
+    return { valid: false, error: 'Invalid room code format.' };
+  }
+
+  const { db } = getFirebaseServices();
+
+  if (db) {
+    try {
+      const roomRef = doc(db, 'rooms', cleanCode);
+      const roomSnap = await getDoc(roomRef);
+      if (!roomSnap.exists()) {
+        return { valid: false, error: `Room ${cleanCode} does not exist or has been closed.` };
+      }
+      const data = roomSnap.data() as TambolaRoom;
+      if (Date.now() - data.createdAt > 24 * 60 * 60 * 1000) {
+        return { valid: false, expired: true, error: `Room ${cleanCode} has expired (24-hour limit reached).` };
+      }
+      return { valid: true, expired: false, room: data };
+    } catch (err: unknown) {
+      console.error('Error verifying room in Firestore:', err);
+      const msg = err instanceof Error ? err.message : String(err);
+      return { valid: false, error: `Failed to connect to room: ${msg}` };
+    }
+  }
+
+  // Local demo mode fallback
+  const local = getLocalRoom(cleanCode);
+  if (!local) {
+    return { valid: false, error: `Room ${cleanCode} was not found.` };
+  }
+  if (Date.now() - local.createdAt > 24 * 60 * 60 * 1000) {
+    return { valid: false, expired: true, error: `Room ${cleanCode} has expired.` };
+  }
+  return { valid: true, expired: false, room: local };
+}
+
+/**
  * Creates a new Tambola room with unique 6-character code and host UID.
  * Game state lives in `rooms/{code}`, players live in subcollection `rooms/{code}/players/{playerUid}`.
  */

@@ -97,7 +97,7 @@ export const CallerScreen: React.FC<CallerScreenProps> = ({
   const handleRepeatCall = () => {
     if (room.currentNumber === null) return;
     unlockSpeechOnIOS();
-    announceNumber(room.currentNumber, true);
+    announceNumber(room.currentNumber, true, true);
     onShowToast(`Announced: ${formatAnnouncement(room.currentNumber)}`, 'info');
   };
 

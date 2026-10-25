@@ -24,6 +24,16 @@ interface ShareSheetProps {
   onShowToast: (msg: string, type?: 'info' | 'success' | 'error') => void;
 }
 
+export function getRoomShareUrl(roomCode: string): string {
+  if (typeof window !== 'undefined') {
+    const host = window.location.hostname;
+    if (host === 'localhost' || host === '127.0.0.1' || host.endsWith('.local')) {
+      return `${window.location.origin}/?room=${roomCode}`;
+    }
+  }
+  return `https://my-tambola-game.web.app/?room=${roomCode}`;
+}
+
 export const ShareSheet: React.FC<ShareSheetProps> = ({
   isOpen,
   onClose,
@@ -38,11 +48,8 @@ export const ShareSheet: React.FC<ShareSheetProps> = ({
 
   if (!isOpen) return null;
 
-  const currentUrl = typeof window !== 'undefined'
-    ? `${window.location.origin}${window.location.pathname}?room=${roomCode}`
-    : `https://tambolacaller.app/?room=${roomCode}`;
-
-  const shareText = `Join my Tambola game. Room code: ${roomCode}. Link: ${currentUrl}`;
+  const currentUrl = getRoomShareUrl(roomCode);
+  const shareText = `Join my Tambola game live! Room code: ${roomCode}. Link: ${currentUrl}`;
   const encodedShareText = encodeURIComponent(shareText);
 
   const canWebShare = typeof navigator !== 'undefined' && Boolean(navigator.share);
