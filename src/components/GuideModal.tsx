@@ -11,40 +11,43 @@ interface GuideModalProps {
 export const FIRESTORE_RULES_TEXT = `rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-
-    // Default deny catch-all
     match /{document=**} {
       allow read, write: if false;
     }
 
-    // Tambola Game Rooms
     match /rooms/{roomId} {
-      // 1. Any player or host can read room state live
-      allow read: if true;
+      function isAuth() {
+        return request.auth != null && request.auth.uid != null;
+      }
+      function isHost() {
+        return isAuth() && resource.data.hostUid == request.auth.uid;
+      }
 
-      // 2. Room creation (must set hostUid to request.auth.uid)
-      allow create: if request.auth != null
-                    && request.resource.data.hostUid == request.auth.uid
-                    && request.resource.data.code is string
-                    && request.resource.data.code.size() == 6
-                    && request.resource.data.players is list
-                    && request.resource.data.players.size() <= 10;
+      allow read: if isAuth();
 
-      // 3. Room updates: strict authorization gate
-      allow update: if request.auth != null && (
-        // Case A: Host mutations (calling numbers, undo, reset, auto interval, heartbeat)
-        // Verified cryptographically by Firebase Auth: only the room's hostUid can call numbers
-        (resource.data.hostUid == request.auth.uid)
-        ||
-        // Case B: Player joining (can only modify the 'players' list and cannot exceed 10 players)
-        // Players are strictly prevented from altering called numbers or game state
-        (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['players'])
-         && request.resource.data.players is list
-         && request.resource.data.players.size() <= 10)
-      );
+      allow create: if isAuth()
+        && request.resource.data.hostUid == request.auth.uid
+        && request.resource.data.code == roomId
+        && request.resource.data.code is string
+        && request.resource.data.code.size() == 6
+        && request.resource.data.calledNumbers.size() == 0
+        && request.resource.data.currentNumber == null;
 
-      // 4. Host deletion
-      allow delete: if request.auth != null && resource.data.hostUid == request.auth.uid;
+      allow update: if isHost()
+        && request.resource.data.hostUid == resource.data.hostUid
+        && request.resource.data.code == resource.data.code
+        && request.resource.data.createdAt == resource.data.createdAt;
+
+      allow delete: if isHost();
+
+      match /players/{playerUid} {
+        allow read: if isAuth();
+        allow create: if isAuth() && request.auth.uid == playerUid && request.resource.data.id == request.auth.uid;
+        allow update: if isAuth() && request.auth.uid == playerUid;
+        allow delete: if isAuth() && (
+          request.auth.uid == playerUid || request.auth.uid == get(/databases/$(database)/documents/rooms/$(roomId)).data.hostUid
+        );
+      }
     }
   }
 }`;

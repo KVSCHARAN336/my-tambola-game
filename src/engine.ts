@@ -4,7 +4,10 @@ import {
   doc,
   setDoc,
   getDoc,
+  getDocs,
+  deleteDoc,
   updateDoc,
+  collection,
   onSnapshot,
   Firestore,
   Unsubscribe
@@ -30,7 +33,7 @@ export function generateRoomCode(): string {
   return result;
 }
 
-// Generate secret host token (used for host session resumption in localStorage)
+// Generate secret host token (used for host session UI resumption)
 export function generateHostToken(): string {
   const array = new Uint8Array(24);
   crypto.getRandomValues(array);
@@ -147,16 +150,15 @@ export function saveLocalRoom(room: TambolaRoom): void {
 }
 
 /**
- * Creates a new Tambola room with unique 6-character code and host UID
+ * Creates a new Tambola room with unique 6-character code and host UID.
+ * Game state lives in `rooms/{code}`, players live in subcollection `rooms/{code}/players/{playerUid}`.
  */
-export async function createGameRoom(code: string, hostToken: string): Promise<TambolaRoom> {
+export async function createGameRoom(code: string, hostToken?: string): Promise<TambolaRoom> {
   const hostUid = await ensureAuthUser();
-  const hostTokenHash = await sha256(hostToken);
 
   const newRoom: TambolaRoom = {
     code,
     hostUid,
-    hostTokenHash,
     currentNumber: null,
     calledNumbers: [],
     players: [],
@@ -166,14 +168,27 @@ export async function createGameRoom(code: string, hostToken: string): Promise<T
     status: 'waiting'
   };
 
-  // Save host credentials locally for session resumption
-  localStorage.setItem(`tambola_host_token_${code}`, hostToken);
+  // Save host credentials locally for fast session resumption on page reload
+  if (hostToken) {
+    localStorage.setItem(`tambola_host_token_${code}`, hostToken);
+  }
   localStorage.setItem('tambola_last_room', code);
 
   const { db } = getFirebaseServices();
   if (db) {
     try {
-      await setDoc(doc(db, 'rooms', code), newRoom);
+      // Room document contains strictly game metadata and state (no player array)
+      const roomPayload = {
+        code,
+        hostUid,
+        currentNumber: null,
+        calledNumbers: [],
+        hostHeartbeat: Date.now(),
+        autoInterval: 6,
+        createdAt: Date.now(),
+        status: 'waiting'
+      };
+      await setDoc(doc(db, 'rooms', code), roomPayload);
       saveLocalRoom(newRoom);
       return newRoom;
     } catch (err: unknown) {
@@ -189,7 +204,10 @@ export async function createGameRoom(code: string, hostToken: string): Promise<T
 }
 
 /**
- * Subscribes to real-time room updates via Firestore onSnapshot
+ * Subscribes to real-time room updates via Firestore listeners on both:
+ * 1. `rooms/{code}` (game state)
+ * 2. `rooms/{code}/players` (player subcollection)
+ * Combines them into the single standard TambolaRoom interface.
  */
 export function subscribeToRoom(
   code: string,
@@ -227,29 +245,76 @@ export function subscribeToRoom(
   const { db } = getFirebaseServices();
 
   if (db) {
+    let latestRoomDoc: Partial<TambolaRoom> | null = initialLocal || null;
+    let latestPlayers: TambolaPlayer[] = initialLocal?.players || [];
+
+    const emitCombined = () => {
+      if (isUnsubscribed) return;
+      if (!latestRoomDoc) {
+        onUpdate(null);
+        return;
+      }
+
+      // Check 24 hour expiry
+      if (latestRoomDoc.createdAt && Date.now() - latestRoomDoc.createdAt > 24 * 60 * 60 * 1000) {
+        onError(new Error('This room has expired (24 hour limit reached).'));
+        onUpdate(null);
+        return;
+      }
+
+      // Sort players by join timestamp ascending for deterministic roster order
+      const sortedPlayers = [...latestPlayers].sort((a, b) => a.joinedAt - b.joinedAt);
+
+      const fullRoom: TambolaRoom = {
+        code: latestRoomDoc.code || code,
+        hostUid: latestRoomDoc.hostUid || '',
+        currentNumber: latestRoomDoc.currentNumber ?? null,
+        calledNumbers: latestRoomDoc.calledNumbers || [],
+        players: sortedPlayers,
+        hostHeartbeat: latestRoomDoc.hostHeartbeat || Date.now(),
+        autoInterval: latestRoomDoc.autoInterval || 6,
+        createdAt: latestRoomDoc.createdAt || Date.now(),
+        status: (latestRoomDoc.status as TambolaRoom['status']) || 'waiting'
+      };
+
+      saveLocalRoom(fullRoom);
+      onUpdate(fullRoom);
+    };
+
+    // 1. Listen to Room document (game state)
     const roomRef = doc(db, 'rooms', code);
-    const firestoreUnsub = onSnapshot(
+    const firestoreRoomUnsub = onSnapshot(
       roomRef,
       snapshot => {
         if (isUnsubscribed) return;
         if (snapshot.exists()) {
-          const data = snapshot.data() as TambolaRoom;
-          // Check 24 hour expiry
-          if (Date.now() - data.createdAt > 24 * 60 * 60 * 1000) {
-            onError(new Error('This room has expired (24 hour limit reached).'));
-            onUpdate(null);
-            return;
-          }
-          saveLocalRoom(data);
-          onUpdate(data);
+          latestRoomDoc = snapshot.data() as Partial<TambolaRoom>;
+          emitCombined();
         } else {
-          onUpdate(null);
+          latestRoomDoc = null;
+          emitCombined();
         }
       },
       error => {
         if (isUnsubscribed) return;
-        console.error('Firestore listener error:', error);
+        console.error('Firestore room listener error:', error);
         onError(new Error(`Firestore sync error: ${error.message}`));
+      }
+    );
+
+    // 2. Listen to Players subcollection
+    const playersColRef = collection(db, 'rooms', code, 'players');
+    const firestorePlayersUnsub = onSnapshot(
+      playersColRef,
+      snapshot => {
+        if (isUnsubscribed) return;
+        latestPlayers = snapshot.docs.map(docSnap => docSnap.data() as TambolaPlayer);
+        emitCombined();
+      },
+      error => {
+        if (isUnsubscribed) return;
+        console.error('Firestore players listener error:', error);
+        onError(new Error(`Firestore players sync error: ${error.message}`));
       }
     );
 
@@ -259,7 +324,8 @@ export function subscribeToRoom(
       if (localChannel) {
         localChannel.removeEventListener('message', handleBroadcast);
       }
-      firestoreUnsub();
+      firestoreRoomUnsub();
+      firestorePlayersUnsub();
     };
   }
 
@@ -274,32 +340,86 @@ export function subscribeToRoom(
 }
 
 /**
- * Joins a room as a player (enforces maximum 10 players, no duplicate seats)
+ * Joins a room as a player by creating or updating only their own player document in
+ * `rooms/{code}/players/{playerUid}`. Ordinary players never write to the room document.
  */
 export async function joinGameRoom(
   code: string,
   playerName: string,
-  existingPlayerId?: string
+  _existingPlayerId?: string
 ): Promise<{ playerId: string; room: TambolaRoom }> {
   const trimmedName = playerName.trim();
   if (!trimmedName) throw new Error('Please enter a valid player name');
+  if (trimmedName.length > 30) throw new Error('Player name must be 30 characters or less');
 
   const playerUid = await ensureAuthUser();
-  const playerId = existingPlayerId || playerUid;
 
   const { db } = getFirebaseServices();
-  let currentRoom: TambolaRoom | null = null;
 
   if (db) {
-    const snap = await getDoc(doc(db, 'rooms', code));
-    if (!snap.exists()) {
+    // 1. Verify room exists and is active
+    const roomSnap = await getDoc(doc(db, 'rooms', code));
+    if (!roomSnap.exists()) {
       throw new Error(`Room ${code} was not found. Please check the code and try again.`);
     }
-    currentRoom = snap.data() as TambolaRoom;
-  } else {
-    currentRoom = getLocalRoom(code);
+
+    const roomData = roomSnap.data() as TambolaRoom;
+    if (Date.now() - roomData.createdAt > 24 * 60 * 60 * 1000) {
+      throw new Error('This room has expired (24 hour limit reached).');
+    }
+
+    // 2. Check if player already has an existing seat in the subcollection
+    const playerDocRef = doc(db, 'rooms', code, 'players', playerUid);
+    const existingPlayerSnap = await getDoc(playerDocRef);
+
+    let playerData: TambolaPlayer;
+
+    if (existingPlayerSnap.exists()) {
+      // Rejoining existing seat
+      const existing = existingPlayerSnap.data() as TambolaPlayer;
+      playerData = {
+        id: playerUid,
+        name: trimmedName,
+        joinedAt: existing.joinedAt || Date.now()
+      };
+      if (existing.name !== trimmedName) {
+        await updateDoc(playerDocRef, { name: trimmedName });
+      }
+    } else {
+      // 3. New player join: check current player capacity
+      const allPlayersSnap = await getDocs(collection(db, 'rooms', code, 'players'));
+      if (allPlayersSnap.size >= 10) {
+        throw new Error('Room is full (Maximum 10 players reached). Cannot join.');
+      }
+
+      playerData = {
+        id: playerUid,
+        name: trimmedName,
+        joinedAt: Date.now()
+      };
+
+      // Create own player record
+      await setDoc(playerDocRef, playerData);
+    }
+
+    localStorage.setItem(`tambola_player_name_${code}`, trimmedName);
+    localStorage.setItem(`tambola_player_id_${code}`, playerUid);
+
+    // Fetch latest players for immediate return
+    const currentPlayersSnap = await getDocs(collection(db, 'rooms', code, 'players'));
+    const playersList = currentPlayersSnap.docs.map(d => d.data() as TambolaPlayer);
+
+    const fullRoom: TambolaRoom = {
+      ...roomData,
+      players: playersList
+    };
+
+    saveLocalRoom(fullRoom);
+    return { playerId: playerUid, room: fullRoom };
   }
 
+  // Local demo fallback
+  const currentRoom = getLocalRoom(code);
   if (!currentRoom) {
     throw new Error(`Room ${code} not found. Please check and try again.`);
   }
@@ -309,26 +429,23 @@ export async function joinGameRoom(
   }
 
   const existingIndex = currentRoom.players.findIndex(
-    p => p.id === playerId || p.name.toLowerCase() === trimmedName.toLowerCase()
+    p => p.id === playerUid || p.name.toLowerCase() === trimmedName.toLowerCase()
   );
 
   let updatedPlayers: TambolaPlayer[];
   if (existingIndex >= 0) {
-    // Rejoin existing seat
     updatedPlayers = [...currentRoom.players];
     updatedPlayers[existingIndex] = {
       ...updatedPlayers[existingIndex],
-      name: trimmedName,
-      joinedAt: Date.now()
+      name: trimmedName
     };
   } else {
-    // Strict 10-player capacity check
     if (currentRoom.players.length >= 10) {
-      throw new Error('Room is full (Maximum 10 players reached). Rejecting 11th player.');
+      throw new Error('Room is full (Maximum 10 players reached).');
     }
     updatedPlayers = [
       ...currentRoom.players,
-      { id: playerId, name: trimmedName, joinedAt: Date.now() }
+      { id: playerUid, name: trimmedName, joinedAt: Date.now() }
     ];
   }
 
@@ -337,58 +454,47 @@ export async function joinGameRoom(
     players: updatedPlayers
   };
 
-  if (db) {
-    try {
-      await updateDoc(doc(db, 'rooms', code), {
-        players: updatedPlayers
-      });
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      throw new Error(`Failed to join room in Firebase: ${msg}`);
-    }
-  }
-
   saveLocalRoom(updatedRoom);
   localStorage.setItem(`tambola_player_name_${code}`, trimmedName);
-  localStorage.setItem(`tambola_player_id_${code}`, playerId);
+  localStorage.setItem(`tambola_player_id_${code}`, playerUid);
 
-  return { playerId, room: updatedRoom };
+  return { playerId: playerUid, room: updatedRoom };
 }
 
 /**
- * Host calls a new random number (enforces host UID authorization and no duplicates)
+ * Host calls a new random number.
+ * Only the authenticated host UID can mutate the room document.
  */
 export async function callNextNumber(
   code: string,
-  hostToken: string,
-  currentRoom: TambolaRoom
+  _hostToken: string,
+  currentRoom?: TambolaRoom
 ): Promise<{ pickedNumber: number | null; updatedRoom: TambolaRoom }> {
+  const room = currentRoom || getLocalRoom(code);
+  if (!room) throw new Error('Room not found');
+
   const currentUid = await ensureAuthUser();
-  if (currentRoom.hostUid && currentRoom.hostUid !== currentUid) {
-    // Check if matching hostToken from localStorage is present for resumption
-    const savedToken = localStorage.getItem(`tambola_host_token_${code}`);
-    if (savedToken !== hostToken) {
-      throw new Error('Unauthorized: Only the host who created this room can call numbers.');
-    }
+  if (room.hostUid && room.hostUid !== currentUid) {
+    throw new Error('Unauthorized: Only the authenticated room host can call numbers.');
   }
 
-  const calledSet = new Set(currentRoom.calledNumbers);
+  const calledSet = new Set(room.calledNumbers);
   const uncalled: number[] = [];
   for (let i = 1; i <= 90; i++) {
     if (!calledSet.has(i)) uncalled.push(i);
   }
 
   if (uncalled.length === 0) {
-    return { pickedNumber: null, updatedRoom: currentRoom };
+    return { pickedNumber: null, updatedRoom: room };
   }
 
   // Draw random uncalled number
   const randomIndex = Math.floor(Math.random() * uncalled.length);
   const pickedNumber = uncalled[randomIndex];
-  const newCalled = [...currentRoom.calledNumbers, pickedNumber];
+  const newCalled = [...room.calledNumbers, pickedNumber];
 
   const updatedRoom: TambolaRoom = {
-    ...currentRoom,
+    ...room,
     currentNumber: pickedNumber,
     calledNumbers: newCalled,
     status: newCalled.length >= 90 ? 'completed' : 'active',
@@ -406,7 +512,7 @@ export async function callNextNumber(
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      throw new Error(`Firebase update failed: ${msg}. Only the room host is permitted to call numbers.`);
+      throw new Error(`Firebase update failed: ${msg}. Only the authenticated host can call numbers.`);
     }
   }
 
@@ -415,28 +521,29 @@ export async function callNextNumber(
 }
 
 /**
- * Host undoes the last call
+ * Host undoes the last call.
+ * Only the authenticated host UID can mutate the room document.
  */
 export async function undoLastCall(
   code: string,
-  hostToken: string,
-  currentRoom: TambolaRoom
+  _hostToken: string,
+  currentRoom?: TambolaRoom
 ): Promise<TambolaRoom> {
+  const room = currentRoom || getLocalRoom(code);
+  if (!room) throw new Error('Room not found');
+
   const currentUid = await ensureAuthUser();
-  if (currentRoom.hostUid && currentRoom.hostUid !== currentUid) {
-    const savedToken = localStorage.getItem(`tambola_host_token_${code}`);
-    if (savedToken !== hostToken) {
-      throw new Error('Unauthorized: Only the host can undo calls.');
-    }
+  if (room.hostUid && room.hostUid !== currentUid) {
+    throw new Error('Unauthorized: Only the authenticated host can undo calls.');
   }
 
-  if (currentRoom.calledNumbers.length === 0) return currentRoom;
+  if (room.calledNumbers.length === 0) return room;
 
-  const newCalled = currentRoom.calledNumbers.slice(0, -1);
+  const newCalled = room.calledNumbers.slice(0, -1);
   const newCurrent = newCalled.length > 0 ? newCalled[newCalled.length - 1] : null;
 
   const updatedRoom: TambolaRoom = {
-    ...currentRoom,
+    ...room,
     currentNumber: newCurrent,
     calledNumbers: newCalled,
     status: 'active',
@@ -463,23 +570,24 @@ export async function undoLastCall(
 }
 
 /**
- * Host resets the game (clears called numbers, keeps players)
+ * Host resets the game (clears called numbers, keeps players).
+ * Only the authenticated host UID can mutate the room document.
  */
 export async function resetGame(
   code: string,
-  hostToken: string,
-  currentRoom: TambolaRoom
+  _hostToken: string,
+  currentRoom?: TambolaRoom
 ): Promise<TambolaRoom> {
+  const room = currentRoom || getLocalRoom(code);
+  if (!room) throw new Error('Room not found');
+
   const currentUid = await ensureAuthUser();
-  if (currentRoom.hostUid && currentRoom.hostUid !== currentUid) {
-    const savedToken = localStorage.getItem(`tambola_host_token_${code}`);
-    if (savedToken !== hostToken) {
-      throw new Error('Unauthorized: Only the host can reset the game.');
-    }
+  if (room.hostUid && room.hostUid !== currentUid) {
+    throw new Error('Unauthorized: Only the authenticated host can reset the game.');
   }
 
   const updatedRoom: TambolaRoom = {
-    ...currentRoom,
+    ...room,
     currentNumber: null,
     calledNumbers: [],
     status: 'waiting',
@@ -506,16 +614,24 @@ export async function resetGame(
 }
 
 /**
- * Host updates auto call interval
+ * Host updates auto call interval.
  */
 export async function updateAutoInterval(
   code: string,
-  hostToken: string,
+  _hostToken: string,
   intervalSeconds: number,
-  currentRoom: TambolaRoom
+  currentRoom?: TambolaRoom
 ): Promise<TambolaRoom> {
+  const room = currentRoom || getLocalRoom(code);
+  if (!room) throw new Error('Room not found');
+
+  const currentUid = await ensureAuthUser();
+  if (room.hostUid && room.hostUid !== currentUid) {
+    throw new Error('Unauthorized: Only the authenticated host can change auto-call interval.');
+  }
+
   const updatedRoom: TambolaRoom = {
-    ...currentRoom,
+    ...room,
     autoInterval: intervalSeconds
   };
 
@@ -525,8 +641,9 @@ export async function updateAutoInterval(
       await updateDoc(doc(db, 'rooms', code), {
         autoInterval: intervalSeconds
       });
-    } catch {
-      // ignore
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`Failed to update interval: ${msg}`);
     }
   }
 
@@ -535,36 +652,38 @@ export async function updateAutoInterval(
 }
 
 /**
- * Host removes a player from the room
+ * Host removes a player from the room by deleting their document in `rooms/{code}/players/{playerId}`.
+ * Only the room host has permission in security rules to delete another user's player document.
  */
 export async function removePlayer(
   code: string,
-  hostToken: string,
+  _hostToken: string,
   playerId: string,
-  currentRoom: TambolaRoom
+  currentRoom?: TambolaRoom
 ): Promise<TambolaRoom> {
+  const room = currentRoom || getLocalRoom(code);
+  if (!room) throw new Error('Room not found');
+  if (!playerId) return room;
+
   const currentUid = await ensureAuthUser();
-  if (currentRoom.hostUid && currentRoom.hostUid !== currentUid) {
-    const savedToken = localStorage.getItem(`tambola_host_token_${code}`);
-    if (savedToken !== hostToken) {
-      throw new Error('Unauthorized: Only the host can remove players.');
-    }
+  if (room.hostUid && room.hostUid !== currentUid) {
+    throw new Error('Unauthorized: Only the authenticated room host can remove players.');
   }
 
-  const updatedPlayers = currentRoom.players.filter(p => p.id !== playerId);
+  const updatedPlayers = room.players.filter(p => p.id !== playerId);
   const updatedRoom: TambolaRoom = {
-    ...currentRoom,
+    ...room,
     players: updatedPlayers
   };
 
   const { db } = getFirebaseServices();
   if (db) {
     try {
-      await updateDoc(doc(db, 'rooms', code), {
-        players: updatedPlayers
-      });
-    } catch {
-      // ignore
+      // Host deletes player document in subcollection
+      await deleteDoc(doc(db, 'rooms', code, 'players', playerId));
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`Failed to remove player: ${msg}`);
     }
   }
 
@@ -573,9 +692,9 @@ export async function removePlayer(
 }
 
 /**
- * Host sends heartbeat timestamp (throttled every 30s to conserve Firestore quota)
+ * Host sends heartbeat timestamp (throttled).
  */
-export async function sendHostHeartbeat(code: string, hostToken: string): Promise<void> {
+export async function sendHostHeartbeat(code: string, _hostToken?: string): Promise<void> {
   const now = Date.now();
   const room = getLocalRoom(code);
   if (room) {

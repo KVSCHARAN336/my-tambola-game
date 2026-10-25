@@ -11,6 +11,7 @@ export interface TambolaRoom {
   currentNumber: number | null;
   calledNumbers: number[];
   players: TambolaPlayer[];
+  playerUids?: string[];
   hostHeartbeat: number;
   autoInterval: number; // in seconds, default 6
   createdAt: number;

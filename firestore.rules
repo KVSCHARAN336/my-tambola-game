@@ -9,34 +9,114 @@ service cloud.firestore {
 
     // Tambola Game Rooms
     match /rooms/{roomId} {
-      // 1. Any player or host can read room state live
-      allow read: if true;
+      // Helper functions for security validation
+      function isAuth() {
+        return request.auth != null && request.auth.uid != null;
+      }
 
-      // 2. Room creation
-      // Requires authenticated user (Firebase Anonymous Auth), matching hostUid, 6-char code, <= 10 players
-      allow create: if request.auth != null
-                    && request.resource.data.hostUid == request.auth.uid
-                    && request.resource.data.code is string
-                    && request.resource.data.code.size() == 6
-                    && request.resource.data.players is list
-                    && request.resource.data.players.size() <= 10;
+      function isHost() {
+        return isAuth() && resource.data.hostUid == request.auth.uid;
+      }
 
-      // 3. Room updates: strict authorization gate
-      allow update: if request.auth != null && (
-        // Case A: Host mutations (calling numbers, undo, reset, auto interval, heartbeat)
-        // Cryptographically authenticated: request.auth.uid must match the room's hostUid
-        (resource.data.hostUid == request.auth.uid)
-        ||
-        // Case B: Player joining the room
-        // Can ONLY mutate the 'players' array and cannot exceed 10 players
-        // Non-hosts are strictly prevented from modifying calledNumbers, currentNumber, or autoInterval
-        (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['players'])
-         && request.resource.data.players is list
-         && request.resource.data.players.size() <= 10)
-      );
+      function isValidCode(code) {
+        return code is string && code.size() == 6;
+      }
 
-      // 4. Host deletion: only the creator host can delete the room
-      allow delete: if request.auth != null && resource.data.hostUid == request.auth.uid;
+      function isValidAutoInterval(val) {
+        return val is number && val >= 3 && val <= 30;
+      }
+
+      // 1. Read: Authenticated users can read room state
+      allow read: if isAuth();
+
+      // 2. Room Creation: Only authenticated host can create room
+      allow create: if isAuth()
+        && request.resource.data.hostUid == request.auth.uid
+        && isValidCode(request.resource.data.code)
+        && request.resource.data.code == roomId
+        && request.resource.data.createdAt is number
+        && request.resource.data.status in ['waiting', 'active']
+        && isValidAutoInterval(request.resource.data.autoInterval)
+        && request.resource.data.calledNumbers is list
+        && request.resource.data.calledNumbers.size() == 0
+        && request.resource.data.currentNumber == null
+        && request.resource.data.keys().hasOnly([
+          'code',
+          'hostUid',
+          'currentNumber',
+          'calledNumbers',
+          'hostHeartbeat',
+          'autoInterval',
+          'createdAt',
+          'status'
+        ]);
+
+      // 3. Room Updates: ONLY the authenticated room host can mutate game state
+      // Non-hosts have ZERO update permissions on room documents
+      allow update: if isHost()
+        // Core identity & ownership fields are immutable
+        && request.resource.data.hostUid == resource.data.hostUid
+        && request.resource.data.code == resource.data.code
+        && request.resource.data.createdAt == resource.data.createdAt
+        // Restrict allowed fields on update (reject unexpected fields)
+        && request.resource.data.keys().hasOnly([
+          'code',
+          'hostUid',
+          'currentNumber',
+          'calledNumbers',
+          'hostHeartbeat',
+          'autoInterval',
+          'createdAt',
+          'status'
+        ])
+        // Valid game state mutations
+        && isValidAutoInterval(request.resource.data.autoInterval)
+        && request.resource.data.status in ['waiting', 'active', 'completed']
+        && request.resource.data.calledNumbers is list
+        && request.resource.data.calledNumbers.size() <= 90
+        && (
+          request.resource.data.currentNumber == null
+          || (
+            request.resource.data.currentNumber is number
+            && request.resource.data.currentNumber >= 1
+            && request.resource.data.currentNumber <= 90
+          )
+        );
+
+      // 4. Room Deletion: ONLY the authenticated room host
+      allow delete: if isHost();
+
+      // 5. Players Subcollection: rooms/{roomId}/players/{playerUid}
+      match /players/{playerUid} {
+        // Authenticated users can view player roster
+        allow read: if isAuth();
+
+        // Create: Player creates strictly their own player document
+        allow create: if isAuth()
+          && request.auth.uid == playerUid
+          && request.resource.data.id == request.auth.uid
+          && request.resource.data.name is string
+          && request.resource.data.name.size() > 0
+          && request.resource.data.name.size() <= 30
+          && request.resource.data.joinedAt is number
+          && request.resource.data.keys().hasOnly(['id', 'name', 'joinedAt']);
+
+        // Update: Player updates strictly their own player record
+        allow update: if isAuth()
+          && request.auth.uid == playerUid
+          && request.resource.data.id == request.auth.uid
+          && request.resource.data.joinedAt == resource.data.joinedAt
+          && request.resource.data.name is string
+          && request.resource.data.name.size() > 0
+          && request.resource.data.name.size() <= 30
+          && request.resource.data.keys().hasOnly(['id', 'name', 'joinedAt']);
+
+        // Delete: Either the player themselves (leaves room) OR the host (kicks player)
+        allow delete: if isAuth() && (
+          request.auth.uid == playerUid
+          || request.auth.uid == get(/databases/$(database)/documents/rooms/$(roomId)).data.hostUid
+        );
+      }
     }
   }
 }
